@@ -1,0 +1,1218 @@
+Absolutely. I looked through your uploaded Keynote, especially the **“Today's Architecture: App Integration”** slide. The architecture you want to demo is:
+
+**Application Event → SNS Topic → SQS Queue × 2 → Lambda → Discord + Slack Webhooks**
+
+That is actually a very good Terraform demo because it lets you demonstrate **IaC + event-driven architecture + SNS fan-out + SQS buffering + Lambda + external integration** in one small project.
+
+![Image](https://images.openai.com/static-rsc-4/CWrH19-Iz89jppfWh7LcbTESq6GIqUp9rZEdW7891n6Y5HAvGwgGOYq73VbrWtkVK8NCdckjYmwcvxE7oDQk7R-uF4bNoq4SREhLZBmsxEkJ9RjZrf2GO0JTe7NEOW5NmQods7KofVFtftEHb85K901cH6S5FotO-guoYeyo9Ueu4rr3TJuVR2jllFm4XqEt?purpose=fullsize)
+
+![Image](https://images.openai.com/static-rsc-4/ms1gtETWLiWwSKXTYTRubJeQ-S9TEav_GqUMf2a2nXL2lLwofxSv-cVNXxS94JbOKelYd7KhE6-PQACMg9QbX9AhGkjReIuhyQeJW-ZYiwMktLYqFSJALXwPh1oO3mlF7yqO8zGjNRu_XaHWLtC9UKw0UuWstl0Xk6KTwDLxqGVtzKCTXdaDbJvycBGZG6AI?purpose=fullsize)
+
+![Image](https://images.openai.com/static-rsc-4/aB4hv8Kg4j-Rj-a2OnBwuBSL0NKFzMXsmCfWTDIYh3VbWSFn_z5qGQZq4i8IPImwWvnJXwb3Py9SIUgne7dzKGCoMOkKXcYDrXwJXz65Vi0QwxThei4kX1GON9OCMD585y4VtEdulNJvqfbvZ91LCWjRV1EhNBiOwfCJW_1p_KcBqQBe2PhY3vXs2ByEW1qF?purpose=fullsize)
+
+![Image](https://images.openai.com/static-rsc-4/Xtx3oWRb0e-NXoyCVFJknWkB6IHVX_7N_G_ClfAXhgGonZldE9TvV3yejdX-T9lLkcDirP4ixIlgpuZZBtLOCoZx16VN4zjGwTocYaF3c4mL0ss9DtHyhexsY3v7-oD6BjLxTlaqsn_8Mlikghjw_-iJ69iYUGh1MglHGjjdopOzXUJtD_z1BAAUIwhmA9TE?purpose=fullsize)
+
+# 1. First: turn the Coffee Shop into a real business case
+
+Instead of making this just an AWS technical demo, I would frame it as a real business problem.
+
+## Business: Smart Coffee Shop Operations Platform
+
+Imagine a coffee chain called **BeanFlow Coffee**.
+
+Customers order through:
+
+* Mobile App
+* Self-service kiosk
+* Website
+* GrabFood / delivery platform
+
+Every order generates an event:
+
+```json
+{
+  "event_type": "ORDER_CREATED",
+  "order_id": "ORD-10025",
+  "store": "SG-ORCHARD",
+  "customer": "Jeff",
+  "items": [
+    {
+      "name": "Iced Latte",
+      "quantity": 1
+    },
+    {
+      "name": "Blueberry Muffin",
+      "quantity": 1
+    }
+  ],
+  "total": 12.50,
+  "timestamp": "2026-08-10T18:00:00+08:00"
+}
+```
+
+The business wants different teams to react to this event.
+
+### Store team
+
+Needs to know:
+
+> "New order received!"
+
+They use **Discord** as the store operations channel.
+
+### HQ / Operations team
+
+Needs:
+
+> "Order activity / operational event"
+
+They use **Slack**.
+
+### The problem
+
+A naive architecture is:
+
+```text
+Order App
+    |
+    +----> Discord
+    |
+    +----> Slack
+```
+
+This creates tight coupling.
+
+If Discord is temporarily unavailable:
+
+```text
+Order App ---> Discord ❌
+```
+
+Now your order application is dependent on Discord.
+
+That's exactly the **synchronous trap** your Keynote describes.
+
+---
+
+# 2. The improved business architecture
+
+We introduce SNS and SQS.
+
+```text
+                         ┌── SQS: Discord Queue ──> Lambda ──> Discord
+                         │
+Order Application ──> SNS Topic
+                         │
+                         └── SQS: Slack Queue ───> Lambda ──> Slack
+```
+
+The important business idea is:
+
+> **The order system doesn't care whether Discord or Slack is available.**
+
+It publishes an event and moves on.
+
+SNS handles the **fan-out**.
+
+SQS handles **buffering**.
+
+Lambda handles **processing/integration**.
+
+That's a very clean explanation for your presentation.
+
+---
+
+# 3. Map this directly to your Keynote #9 architecture
+
+Your slide shows:
+
+```text
+Application Event
+       |
+       v
+Amazon SNS Topic
+    "Fan-Out"
+       |
+       +----------------+
+       |                |
+       v                v
+    SQS Queue        SQS Queue
+       |                |
+       +-------+--------+
+               |
+               v
+          AWS Lambda
+          Processing
+           /      \
+          v        v
+      Discord     Slack
+      Webhook    Webhook
+```
+
+We're going to build **exactly this with Terraform**.
+
+The only difference is that we'll give the components real business names:
+
+| Keynote           | Terraform demo                    |
+| ----------------- | --------------------------------- |
+| Application Event | Coffee Order Event                |
+| SNS Topic         | `beanflow-order-events`           |
+| SQS #1            | `beanflow-discord-queue`          |
+| SQS #2            | `beanflow-slack-queue`            |
+| Lambda            | `beanflow-notification-processor` |
+| Discord Webhook   | Store Operations                  |
+| Slack Webhook     | HQ Operations                     |
+
+This makes the demo much more compelling than simply saying "here's an SNS topic."
+
+---
+
+# 4. What we're going to build
+
+I recommend we build this in **6 stages**.
+
+```text
+Stage 1
+Local application
+      ↓
+Stage 2
+SNS
+      ↓
+Stage 3
+SNS → SQS fan-out
+      ↓
+Stage 4
+SQS → Lambda
+      ↓
+Stage 5
+Lambda → Discord / Slack
+      ↓
+Stage 6
+Complete live demo
+```
+
+Terraform manages almost everything.
+
+---
+
+# 5. Project structure
+
+Create this:
+
+```text
+beanflow-aws-demo/
+│
+├── terraform/
+│   ├── main.tf
+│   ├── variables.tf
+│   ├── outputs.tf
+│   ├── iam.tf
+│   ├── sns.tf
+│   ├── sqs.tf
+│   ├── lambda.tf
+│   ├── providers.tf
+│   └── terraform.tfvars
+│
+├── lambda/
+│   └── index.mjs
+│
+├── scripts/
+│   └── send-order.sh
+│
+└── README.md
+```
+
+This is already something you could put into GitHub and show during an interview/demo.
+
+---
+
+# 6. Step 1 — AWS prerequisites
+
+You'll need:
+
+### Terraform
+
+Check:
+
+```bash
+terraform --version
+```
+
+### AWS CLI
+
+```bash
+aws --version
+```
+
+Then:
+
+```bash
+aws sts get-caller-identity
+```
+
+You should see something like:
+
+```json
+{
+    "UserId": "...",
+    "Account": "123456789012",
+    "Arn": "arn:aws:iam::123456789012:user/..."
+}
+```
+
+For this demo, I recommend using **Singapore**:
+
+```text
+ap-southeast-1
+```
+
+---
+
+# 7. Step 2 — Create SNS
+
+Create:
+
+```text
+terraform/sns.tf
+```
+
+```hcl
+resource "aws_sns_topic" "order_events" {
+  name = "beanflow-order-events"
+
+  tags = {
+    Project = "BeanFlow"
+    Purpose = "Coffee Order Events"
+  }
+}
+```
+
+Conceptually:
+
+```text
+Coffee Order
+     |
+     v
+SNS
+```
+
+SNS is the **event broadcaster**.
+
+AWS describes SNS as supporting fan-out to multiple subscribers, while SQS provides persistent queues for asynchronous processing. ([Terraform Registry][1])
+
+---
+
+# 8. Step 3 — Create the two SQS queues
+
+Create:
+
+```text
+terraform/sqs.tf
+```
+
+```hcl
+resource "aws_sqs_queue" "discord" {
+  name = "beanflow-discord-queue"
+
+  visibility_timeout_seconds = 60
+
+  tags = {
+    Project = "BeanFlow"
+    Consumer = "Discord"
+  }
+}
+
+resource "aws_sqs_queue" "slack" {
+  name = "beanflow-slack-queue"
+
+  visibility_timeout_seconds = 60
+
+  tags = {
+    Project = "BeanFlow"
+    Consumer = "Slack"
+  }
+}
+```
+
+Now:
+
+```text
+                    SNS
+                     |
+             +-------+-------+
+             |               |
+             v               v
+        Discord SQS      Slack SQS
+```
+
+This is the key architectural improvement.
+
+If Discord stops responding:
+
+```text
+SNS
+ |
+ v
+Discord SQS
+ |
+ |  messages wait
+ |
+ X Discord temporarily unavailable
+```
+
+The messages aren't simply lost.
+
+---
+
+# 9. Step 4 — SNS → SQS subscriptions
+
+Now we tell SNS:
+
+> Whenever a coffee order event arrives, send a copy to both queues.
+
+```hcl
+resource "aws_sns_topic_subscription" "discord" {
+  topic_arn = aws_sns_topic.order_events.arn
+  protocol  = "sqs"
+  endpoint  = aws_sqs_queue.discord.arn
+
+  raw_message_delivery = true
+}
+
+resource "aws_sns_topic_subscription" "slack" {
+  topic_arn = aws_sns_topic.order_events.arn
+  protocol  = "sqs"
+  endpoint  = aws_sqs_queue.slack.arn
+
+  raw_message_delivery = true
+}
+```
+
+Terraform's AWS provider specifically supports SNS → SQS subscriptions; this is one of the standard SNS/SQS fan-out patterns. ([Terraform Registry][2])
+
+But we're **not finished**.
+
+AWS needs permission for SNS to put messages into these queues.
+
+---
+
+# 10. Step 5 — SQS policies
+
+This is actually a good part to explain during the demo because it shows you understand AWS IAM rather than simply copying Terraform.
+
+Add:
+
+```hcl
+data "aws_iam_policy_document" "discord_queue_policy" {
+  statement {
+    effect = "Allow"
+
+    principals {
+      type        = "Service"
+      identifiers = ["sns.amazonaws.com"]
+    }
+
+    actions = [
+      "sqs:SendMessage"
+    ]
+
+    resources = [
+      aws_sqs_queue.discord.arn
+    ]
+
+    condition {
+      test     = "ArnEquals"
+      variable = "aws:SourceArn"
+      values = [
+        aws_sns_topic.order_events.arn
+      ]
+    }
+  }
+}
+
+resource "aws_sqs_queue_policy" "discord" {
+  queue_url = aws_sqs_queue.discord.url
+  policy    = data.aws_iam_policy_document.discord_queue_policy.json
+}
+```
+
+And similarly for Slack:
+
+```hcl
+data "aws_iam_policy_document" "slack_queue_policy" {
+  statement {
+    effect = "Allow"
+
+    principals {
+      type        = "Service"
+      identifiers = ["sns.amazonaws.com"]
+    }
+
+    actions = [
+      "sqs:SendMessage"
+    ]
+
+    resources = [
+      aws_sqs_queue.slack.arn
+    ]
+
+    condition {
+      test     = "ArnEquals"
+      variable = "aws:SourceArn"
+      values = [
+        aws_sns_topic.order_events.arn
+      ]
+    }
+  }
+}
+
+resource "aws_sqs_queue_policy" "slack" {
+  queue_url = aws_sqs_queue.slack.url
+  policy    = data.aws_iam_policy_document.slack_queue_policy.json
+}
+```
+
+The explicit `2012-10-17` policy version is important with SQS policies; the Terraform provider documentation calls this out as well. ([Terraform Registry][3])
+
+---
+
+# 11. Step 6 — Lambda
+
+Now we need:
+
+```text
+SQS
+ |
+ v
+Lambda
+ |
+ +----> Discord
+ |
+ +----> Slack
+```
+
+We'll use **Node.js 24** because it is currently an AWS-supported Lambda runtime and is based on Amazon Linux 2023. ([AWS Documentation][4])
+
+Create:
+
+```text
+lambda/index.mjs
+```
+
+For the first demo, keep the Lambda extremely simple:
+
+```javascript
+export const handler = async (event) => {
+    console.log("Received event:");
+    console.log(JSON.stringify(event, null, 2));
+
+    for (const record of event.Records) {
+        console.log("Message:", record.body);
+    }
+
+    return {
+        statusCode: 200
+    };
+};
+```
+
+Don't integrate Discord/Slack yet.
+
+First we prove:
+
+```text
+SNS
+ ↓
+SQS
+ ↓
+Lambda
+```
+
+That's important for debugging.
+
+---
+
+# 12. Lambda IAM role
+
+Create:
+
+```text
+terraform/iam.tf
+```
+
+```hcl
+data "aws_iam_policy_document" "lambda_assume_role" {
+  statement {
+    effect = "Allow"
+
+    principals {
+      type        = "Service"
+      identifiers = ["lambda.amazonaws.com"]
+    }
+
+    actions = [
+      "sts:AssumeRole"
+    ]
+  }
+}
+
+resource "aws_iam_role" "lambda" {
+  name = "beanflow-notification-lambda-role"
+
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
+}
+```
+
+Then CloudWatch logging:
+
+```hcl
+resource "aws_iam_role_policy_attachment" "lambda_logs" {
+  role       = aws_iam_role.lambda.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+```
+
+---
+
+# 13. Package the Lambda with Terraform
+
+Create:
+
+```hcl
+data "archive_file" "lambda" {
+  type        = "zip"
+  source_file = "${path.module}/../lambda/index.mjs"
+  output_path = "${path.module}/lambda.zip"
+}
+```
+
+Terraform's `archive_file` data source/resource is designed for exactly this type of Lambda ZIP packaging. ([Terraform Registry][5])
+
+Then:
+
+```hcl
+resource "aws_lambda_function" "notification_processor" {
+  function_name = "beanflow-notification-processor"
+
+  filename         = data.archive_file.lambda.output_path
+  source_code_hash = data.archive_file.lambda.output_base64sha256
+
+  role = aws_iam_role.lambda.arn
+
+  handler = "index.handler"
+  runtime = "nodejs24.x"
+
+  timeout     = 30
+  memory_size = 128
+
+  tags = {
+    Project = "BeanFlow"
+  }
+}
+```
+
+---
+
+# 14. Connect SQS to Lambda
+
+This is the other important Terraform resource:
+
+```hcl
+resource "aws_lambda_event_source_mapping" "discord" {
+  event_source_arn = aws_sqs_queue.discord.arn
+  function_name    = aws_lambda_function.notification_processor.arn
+
+  batch_size = 1
+
+  enabled = true
+}
+
+resource "aws_lambda_event_source_mapping" "slack" {
+  event_source_arn = aws_sqs_queue.slack.arn
+  function_name    = aws_lambda_function.notification_processor.arn
+
+  batch_size = 1
+
+  enabled = true
+}
+```
+
+AWS Lambda polls the SQS queues and invokes the function when messages arrive; Terraform manages that connection through `aws_lambda_event_source_mapping`. ([Terraform Registry][6])
+
+So now your infrastructure is:
+
+```text
+                 ┌── Discord SQS ──┐
+                 │                 │
+Coffee Order → SNS                Lambda
+                 │                 │
+                 └── Slack SQS ────┘
+                                   │
+                              Processing
+```
+
+---
+
+# 15. Step 7 — Terraform provider
+
+Create:
+
+```text
+terraform/providers.tf
+```
+
+```hcl
+terraform {
+  required_version = ">= 1.6.0"
+
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 6.0"
+    }
+
+    archive = {
+      source  = "hashicorp/archive"
+      version = "~> 2.0"
+    }
+  }
+}
+
+provider "aws" {
+  region = var.aws_region
+}
+```
+
+And:
+
+```text
+terraform/variables.tf
+```
+
+```hcl
+variable "aws_region" {
+  type    = string
+  default = "ap-southeast-1"
+}
+```
+
+---
+
+# 16. Step 8 — Deploy
+
+From:
+
+```bash
+cd beanflow-aws-demo/terraform
+```
+
+Run:
+
+```bash
+terraform init
+```
+
+Then:
+
+```bash
+terraform validate
+```
+
+You want:
+
+```text
+Success! The configuration is valid.
+```
+
+Then:
+
+```bash
+terraform plan
+```
+
+This is actually a great moment during your demo.
+
+Say:
+
+> "I haven't manually created any AWS resources. Terraform is going to calculate the desired infrastructure from code."
+
+Then:
+
+```bash
+terraform apply
+```
+
+Type:
+
+```text
+yes
+```
+
+---
+
+# 17. What Terraform should create
+
+You should end up with roughly:
+
+```text
+AWS
+│
+├── SNS Topic
+│   └── beanflow-order-events
+│
+├── SQS
+│   ├── beanflow-discord-queue
+│   └── beanflow-slack-queue
+│
+├── Lambda
+│   └── beanflow-notification-processor
+│
+├── IAM
+│   └── Lambda execution role
+│
+└── CloudWatch Logs
+    └── /aws/lambda/beanflow-notification-processor
+```
+
+This is already a very nice Terraform demo.
+
+---
+
+# 18. Step 9 — Test SNS manually
+
+Get the SNS ARN:
+
+```bash
+terraform output
+```
+
+I'd create:
+
+```text
+terraform/outputs.tf
+```
+
+```hcl
+output "sns_topic_arn" {
+  value = aws_sns_topic.order_events.arn
+}
+
+output "discord_queue_url" {
+  value = aws_sqs_queue.discord.url
+}
+
+output "slack_queue_url" {
+  value = aws_sqs_queue.slack.url
+}
+
+output "lambda_name" {
+  value = aws_lambda_function.notification_processor.function_name
+}
+```
+
+Then:
+
+```bash
+terraform output sns_topic_arn
+```
+
+Copy the ARN.
+
+Publish:
+
+```bash
+aws sns publish \
+  --topic-arn "$(terraform output -raw sns_topic_arn)" \
+  --message '{
+    "event_type": "ORDER_CREATED",
+    "order_id": "ORD-10025",
+    "store": "SG-ORCHARD",
+    "items": ["Iced Latte", "Blueberry Muffin"],
+    "total": 12.50
+  }'
+```
+
+---
+
+# 19. Now comes the cool part
+
+Open AWS Console.
+
+Go to:
+
+**SQS → beanflow-discord-queue**
+
+You should see:
+
+```text
+Messages Available: 1
+```
+
+And:
+
+**SQS → beanflow-slack-queue**
+
+also:
+
+```text
+Messages Available: 1
+```
+
+That's your **SNS fan-out** happening live.
+
+One event:
+
+```text
+                 SNS
+                  |
+          ┌───────┴───────┐
+          ↓               ↓
+       Queue A          Queue B
+```
+
+Two independent copies.
+
+---
+
+# 20. Then Lambda consumes them
+
+After Lambda processes the messages:
+
+```text
+Messages Available
+       ↓
+      0
+```
+
+And CloudWatch Logs should show:
+
+```text
+Received event
+
+Message:
+{
+  "event_type": "ORDER_CREATED",
+  "order_id": "ORD-10025",
+  ...
+}
+```
+
+AWS's SQS/Lambda integration uses an event source mapping that polls the queue and invokes Lambda. ([AWS Documentation][7])
+
+---
+
+# 21. Step 10 — Now make it a REAL live demo
+
+This is where I'd make the demo much more impressive.
+
+Instead of:
+
+```text
+Lambda
+   ↓
+console.log()
+```
+
+make it:
+
+```text
+Lambda
+   │
+   ├──────────> Discord
+   │
+   └──────────> Slack
+```
+
+Discord:
+
+```text
+☕ BeanFlow Coffee
+
+NEW ORDER
+
+Order: ORD-10025
+Store: SG-Orchard
+
+1 × Iced Latte
+1 × Blueberry Muffin
+
+Total: $12.50
+```
+
+Slack:
+
+```text
+🚨 BeanFlow Order Event
+
+ORD-10025
+SG-Orchard
+$12.50
+
+Order received successfully.
+```
+
+Now you've got an actual **business demo**, not just an AWS demo.
+
+---
+
+# 22. Lambda webhook logic
+
+For the demo, the Lambda can determine which queue triggered it from an environment variable.
+
+For example:
+
+```hcl
+environment {
+  variables = {
+    DISCORD_WEBHOOK_URL = var.discord_webhook_url
+    SLACK_WEBHOOK_URL   = var.slack_webhook_url
+  }
+}
+```
+
+But **don't commit webhook URLs into Git**.
+
+Use:
+
+```text
+terraform.tfvars
+```
+
+and:
+
+```text
+.gitignore
+```
+
+with:
+
+```text
+terraform.tfvars
+*.zip
+.terraform/
+terraform.tfstate
+terraform.tfstate.*
+```
+
+For a more production-quality version, I'd actually move the webhook URLs into **AWS Secrets Manager** and let Lambda retrieve them. For a live interview/demo, we can start with sensitive Terraform variables and then show the Secrets Manager improvement as the "production hardening" step.
+
+---
+
+# 23. The final business flow
+
+The live demo should look like this:
+
+### Step 1 — Customer places order
+
+You run:
+
+```bash
+./scripts/send-order.sh
+```
+
+### Step 2 — Application publishes event
+
+```text
+Coffee App
+     ↓
+SNS
+```
+
+### Step 3 — SNS fans out
+
+```text
+                SNS
+              /     \
+             /       \
+            ↓         ↓
+      Discord SQS   Slack SQS
+```
+
+### Step 4 — Lambda consumes
+
+```text
+Discord SQS ──┐
+              ├──> Lambda
+Slack SQS ────┘
+```
+
+### Step 5 — Lambda sends notifications
+
+```text
+                Lambda
+                /    \
+               ↓      ↓
+           Discord   Slack
+```
+
+And your audience literally watches both messages appear.
+
+That's a very satisfying demo.
+
+---
+
+# 24. But I want to add ONE important improvement
+
+Your Keynote architecture shows:
+
+```text
+SQS
+ ↓
+Lambda
+ ↓
+Discord / Slack
+```
+
+I'd keep that architecture for the presentation because **you asked to match Keynote #9**.
+
+But internally, I'd make the implementation slightly more robust:
+
+```text
+                 SNS
+                  |
+        ┌─────────┴──────────┐
+        ↓                    ↓
+ Discord SQS             Slack SQS
+        ↓                    ↓
+ Discord Lambda           Slack Lambda
+        ↓                    ↓
+     Discord                Slack
+```
+
+Why?
+
+Because otherwise one Lambda failure can affect both integrations.
+
+For example:
+
+```text
+Discord webhook broken
+       ↓
+Lambda fails
+       ↓
+Slack notification also affected
+```
+
+With separate consumers:
+
+```text
+Discord failure
+      ↓
+Discord queue keeps retrying
+
+Slack
+  ↓
+continues working
+```
+
+That is a more production-ready microservices architecture.
+
+**But don't start there.**
+
+For your live demo, I recommend:
+
+### Version 1 — exactly like Keynote
+
+```text
+SNS
+ ↓
+SQS × 2
+ ↓
+Lambda
+ ↓
+Discord + Slack
+```
+
+Then at the end say:
+
+> "For production, I would split the Lambda consumers so that failure in one notification channel doesn't affect the other."
+
+That demonstrates architectural thinking, rather than simply following a diagram.
+
+---
+
+# 25. Your Terraform learning path
+
+I suggest we build this together in this exact order:
+
+```text
+                    ┌─────────────────────┐
+                    │  Business Scenario  │
+                    │   BeanFlow Coffee    │
+                    └──────────┬──────────┘
+                               │
+                               ▼
+                    ┌─────────────────────┐
+                    │   Application Event  │
+                    └──────────┬──────────┘
+                               │
+                               ▼
+                    ┌─────────────────────┐
+                    │     SNS Topic       │
+                    │      Fan-Out        │
+                    └──────────┬──────────┘
+                               │
+                    ┌──────────┴──────────┐
+                    ▼                     ▼
+             ┌────────────┐       ┌────────────┐
+             │ Discord SQS│       │  Slack SQS │
+             └──────┬─────┘       └──────┬─────┘
+                    │                    │
+                    └─────────┬──────────┘
+                              ▼
+                    ┌─────────────────────┐
+                    │       Lambda        │
+                    │     Processor       │
+                    └──────────┬──────────┘
+                               │
+                         ┌─────┴─────┐
+                         ▼           ▼
+                      Discord      Slack
+```
+
+And Terraform owns:
+
+```text
+SNS
+SQS
+SNS subscriptions
+SQS policies
+IAM
+Lambda
+Lambda event source mappings
+CloudWatch
+```
+
+That's a **very solid hands-on Terraform/AWS demo**.
+
+---
+
+## The next step
+
+I suggest we **don't dump all the Terraform code at once**.
+
+Let's build it like an actual engineering exercise:
+
+**Part 1:** create the project + provider + SNS + two SQS queues
+**Part 2:** add SNS → SQS permissions and subscriptions
+**Part 3:** add Lambda + IAM
+**Part 4:** connect SQS → Lambda
+**Part 5:** create Discord/Slack webhooks
+**Part 6:** wire Lambda → Discord/Slack
+**Part 7:** run the complete live demo
+**Part 8:** intentionally break Discord and demonstrate why SQS decoupling matters
+**Part 9:** `terraform destroy`
+
+That last failure demonstration is particularly good: publish an order while Discord is unavailable, then restore Discord and show the queued message being processed. **That's the moment where SNS/SQS stops being a diagram and becomes a real business solution.**
+
+AWS's current Lambda documentation supports Node.js 24/22, and the current Terraform AWS provider supports the SNS/SQS/Lambda resources we're using here. ([AWS Documentation][4])
+
+If you want, **we can start with Part 1 right now**, and I'll give you the exact commands and files to create on your Mac, one command at a time, so you can run Terraform and I can help you troubleshoot each output.
+
+[1]: https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/sns_topic.html?utm_source=chatgpt.com "aws_sns_topic | Resources | hashicorp/aws | Terraform | Terraform Registry"
+[2]: https://registry.terraform.io/providers/hashicorp/aws/5.85.0/docs/resources/sns_topic_subscription?utm_source=chatgpt.com "aws_sns_topic_subscription | Resources | hashicorp/aws | Terraform | Terraform Registry"
+[3]: https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/sqs_queue_policy.html?utm_source=chatgpt.com "aws_sqs_queue_policy | Resources | hashicorp/aws | Terraform | Terraform Registry"
+[4]: https://docs.aws.amazon.com/lambda/latest/dg/lambda-runtimes.html?utm_source=chatgpt.com "Lambda runtimes - AWS Lambda"
+[5]: https://registry.terraform.io/providers/hashicorp/archive/2.7.0/docs/resources/file?utm_source=chatgpt.com "archive_file | Resources | hashicorp/archive | Terraform | Terraform Registry"
+[6]: https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/lambda_event_source_mapping.html?utm_source=chatgpt.com "aws_lambda_event_source_mapping | Resources | hashicorp/aws | Terraform | Terraform Registry"
+[7]: https://docs.aws.amazon.com/lambda/latest/dg/with-sqs-example.html?utm_source=chatgpt.com "Tutorial: Using Lambda with Amazon SQS - AWS Lambda"
