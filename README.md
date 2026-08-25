@@ -928,7 +928,7 @@ Current implementation:
 * [x] Lambda IAM role
 * [x] Lambda SQS permissions
 * [x] SQS → Lambda event source mappings
-* [ ] Discord webhook integration
+* [x] Discord webhook integration
 * [ ] Slack webhook integration
 * [ ] Dead Letter Queues
 * [ ] AWS Secrets Manager
