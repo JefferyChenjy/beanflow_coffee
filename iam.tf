@@ -1,3 +1,4 @@
+# This file is used to create an IAM role and policy for the Lambda function that will process messages from the SQS queues.
 data "aws_iam_policy_document" "lambda_assume_role" {
   statement {
     effect = "Allow"

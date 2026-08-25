@@ -1,6 +1,5 @@
-# key architectural improvement. If Discord stops responding, we don't want to lose the event. 
-# So we fan-out to SQS queues for each consumer. 
-# Each consumer can then process the events at their own pace and retry if needed.
+# key architectural improvement. If Discord stops responding, don't want to lose the event. 
+# fan-out to SQS queues for different platforms. Lambda will process the events from the queues and send to Discord and Slack.
 
 resource "aws_sqs_queue" "discord" {
   name = "beanflow-discord-queue"

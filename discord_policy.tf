@@ -1,3 +1,4 @@
+# This file is used to create an IAM policy document for the SQS queue that allows SNS to send messages to it.
 data "aws_iam_policy_document" "discord_queue_policy" {
   statement {
     effect = "Allow"

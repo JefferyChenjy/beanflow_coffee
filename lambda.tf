@@ -1,3 +1,4 @@
+# This file is used to create a Lambda function that will process messages from the SQS queues and send notifications to Discord and Slack. It also creates event source mappings that allow the Lambda function to be triggered by messages in the SQS queues.
 resource "aws_lambda_function" "notification_processor" {
   function_name = "beanflow-notification-processor"
 
